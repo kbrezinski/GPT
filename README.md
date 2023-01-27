@@ -1,7 +1,7 @@
 
 # mini-GPT
 
-![GitHub](https://img.shields.io/github/license/kbrezinski/mini-GPT)
+![GitHub](https://img.shields.io/github/license/kbrezinski/mini-GPT?logo=MIT)
 
 This is a minimal implementation of GPT-2 in PyTorch. It is intended to be a starting point for researchers and students to understand the model and experiment with it. It is not intended to be a production-ready implementation. 
 
