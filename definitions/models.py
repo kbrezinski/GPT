@@ -13,6 +13,7 @@ class AttentionHead(nn.Module):
         self.v = torch.nn.Linear(embed_dim, head_size, bias=False)
         self.register_buffer('tril_mask',
                  torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(0.3)
 
     def forward(self, tokens):
         batch, block, embed_dim = tokens.shape
@@ -22,6 +23,7 @@ class AttentionHead(nn.Module):
         # query key attention; normalize by sqrt(d_k)
         wei = q @ k.transpose(-2, -1) * (embed_dim ** -0.5)
         wei = wei.masked_fill(self.tril_mask[:block, :block] == 0, -1e9).softmax(dim=-1)
+        wei = self.dropout(wei)
         # weighted aggregation
         v = self.v(tokens)
         output = torch.matmul(wei, v)
@@ -35,9 +37,42 @@ class MultiAttention(nn.Module):
         head_size = embed_dim // num_heads
         self.heads = nn.ModuleList(
             [AttentionHead(embed_dim, block_size, head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(embed_dim, embed_dim)
+        self.dropout = nn.Dropout(0.3)
 
     def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1)
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.dropout(self.proj(out))
+        return out
+
+
+# Feedforward block that has 2+ layers in sequence
+class FeedForward(nn.Module):
+    def __init__(self, embed_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(embed_dim, 4*embed_dim),
+            nn.ReLU(),
+            nn.Linear(4*embed_dim, embed_dim),
+            nn.Dropout(0.3)
+        )
+    def forward(self, x):
+        return self.net(x)
+
+
+# Layer Norm implementation:
+class LayerNorm(nn.Module):
+    def __init__(self, embed_dim, eps=1e-6):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(embed_dim))
+        self.beta = nn.Parameter(torch.zeros(embed_dim))
+        self.eps = eps
+
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        std = x.std(-1, keepdim=True)
+        xhat = (x - mean) / (std + self.eps).pow(0.5)
+        return self.gamma * xhat + self.beta
 
 
 # Transformer block implementation
@@ -45,11 +80,14 @@ class TransformerBlock(nn.Module):
     def __init__(self, num_heads, block_size, embed_dim):
         super().__init__()
         self.attention = MultiAttention(num_heads, block_size, embed_dim)
-        self.linear = nn.Linear(embed_dim, embed_dim)
+        self.feed_forward = FeedForward(embed_dim)
+        self.ln1 = LayerNorm(embed_dim)
+        self.ln2 = LayerNorm(embed_dim)
 
     def forward(self, x):
-        x = self.attention(x)
-        x = self.linear(x).relu()
+        # residual connection here
+        x = x + self.attention(self.ln1(x))
+        x = x + self.feed_forward(self.ln2(x))
         return x
 
 
@@ -60,7 +98,8 @@ class BiGram(nn.Module):
         self.embedding = nn.Embedding(vocab_size, embed_dim)
         self.pos_embedding = nn.Embedding(vocab_size, embed_dim)
         self.attn_block = nn.Sequential(
-            *[TransformerBlock(num_heads, block_size, embed_dim) for _ in range(3)])
+            *[TransformerBlock(num_heads, block_size, embed_dim) for _ in range(6)])
+        self.layer_norm = LayerNorm(embed_dim)
         self.linear = nn.Linear(embed_dim, vocab_size)
 
     def forward(self, tokens, target=None):
@@ -73,7 +112,7 @@ class BiGram(nn.Module):
         x = token_embed + pos_embed
 
         x = self.attn_block(x)
-        logits = self.linear(x)
+        logits = self.linear(self.layer_norm(x))
         
         # (batch*block, vocab_size)
         if target is None:
